@@ -42,6 +42,7 @@ function parseMovFleeMessage(payload, telemetry) {
   const result = {
     device_id: null,
     vehicle_id: null,
+    serial_number: null,
     location_data: null,
     fuel_data: null,
     charge_data: null,
@@ -55,6 +56,9 @@ function parseMovFleeMessage(payload, telemetry) {
   if (telemetry.device_id) result.device_id = telemetry.device_id;
   if (telemetry.vehicle_id || payload.vehicleId) {
     result.vehicle_id = telemetry.vehicle_id || payload.vehicleId;
+  }
+  if (telemetry.device_serial_number) {
+    result.serial_number = telemetry.device_serial_number;
   }
 
   if (telemetry.location && telemetry.location.latitude && telemetry.location.longitude) {
@@ -139,11 +143,9 @@ function parseMovFleeMessage(payload, telemetry) {
     }
   }
 
-  if (telemetry.device_type || telemetry.device_serial_number || 
-      telemetry.vehicle_make || telemetry.vehicle_model) {
+  if (telemetry.device_type || telemetry.vehicle_make || telemetry.vehicle_model) {
     if (!result.misc_data) result.misc_data = {};
     if (telemetry.device_type) result.misc_data.device_type = telemetry.device_type;
-    if (telemetry.device_serial_number) result.misc_data.device_serial_number = telemetry.device_serial_number;
     if (telemetry.vehicle_make) result.misc_data.vehicle_make = telemetry.vehicle_make;
     if (telemetry.vehicle_model) result.misc_data.vehicle_model = telemetry.vehicle_model;
     if (telemetry.id) result.misc_data.telemetry_id = telemetry.id;
