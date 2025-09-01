@@ -38,7 +38,47 @@ app.post('/connect', (req, res) => {
   res.json({ message: 'Connection attempt initiated' });
 });
 
-function parseMovFleeMessage(payload, telemetry) {
+// Function to resolve device and vehicle IDs from serial number
+async function resolveDeviceAndVehicleIds(serialNumber) {
+  if (!serialNumber) return { device_id: null, vehicle_id: null };
+
+  try {
+    // Get device_id from telematic_devices using serial_number
+    const { data: deviceData, error: deviceError } = await supabase
+      .from('telematic_devices')
+      .select('device_id')
+      .eq('device_serial', serialNumber)
+      .single();
+
+    if (deviceError || !deviceData) {
+      console.log('Device not found for serial number:', serialNumber);
+      return { device_id: null, vehicle_id: null };
+    }
+
+    const device_id = deviceData.device_id;
+
+    // Get vehicle_id from vehicle_telematic_assignments
+    const { data: assignmentData, error: assignmentError } = await supabase
+      .from('vehicle_telematic_assignments')
+      .select('vehicle_id')
+      .eq('device_id', device_id)
+      .single();
+
+    if (assignmentError || !assignmentData) {
+      console.log('Vehicle assignment not found for device_id:', device_id);
+      return { device_id, vehicle_id: null };
+    }
+
+    return { 
+      device_id: device_id, 
+      vehicle_id: assignmentData.vehicle_id 
+    };
+
+  } catch (error) {
+    console.error('Error resolving device/vehicle IDs:', error);
+    return { device_id: null, vehicle_id: null };
+  }
+}
   const result = {
     movflee_device_id: null,
     movflee_vehicle_id: null,
@@ -232,11 +272,16 @@ async function connectToAWS() {
         
         const parsedData = parseMovFleeMessage(payload, telemetry);
         
+        // Resolve device and vehicle IDs from serial number
+        const resolvedIds = await resolveDeviceAndVehicleIds(parsedData.serial_number);
+        
         const insertData = {
           tenant_id: TENANT_ID,
           update_type: updateType,
           timestamp: messageTimestamp,
-          raw_telemetry: messageData
+          raw_telemetry: messageData,
+          device_id: resolvedIds.device_id,
+          vehicle_id: resolvedIds.vehicle_id
         };
 
         Object.keys(parsedData).forEach(key => {
