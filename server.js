@@ -40,8 +40,8 @@ app.post('/connect', (req, res) => {
 
 function parseMovFleeMessage(payload, telemetry) {
   const result = {
-    device_id: null,
-    vehicle_id: null,
+    movflee_device_id: null,
+    movflee_vehicle_id: null,
     serial_number: null,
     location_data: null,
     fuel_data: null,
@@ -53,9 +53,9 @@ function parseMovFleeMessage(payload, telemetry) {
     misc_data: null
   };
 
-  if (telemetry.device_id) result.device_id = telemetry.device_id;
+  if (telemetry.device_id) result.movflee_device_id = telemetry.device_id;
   if (telemetry.vehicle_id || payload.vehicleId) {
-    result.vehicle_id = telemetry.vehicle_id || payload.vehicleId;
+    result.movflee_vehicle_id = telemetry.vehicle_id || payload.vehicleId;
   }
   if (telemetry.device_serial_number) {
     result.serial_number = telemetry.device_serial_number;
