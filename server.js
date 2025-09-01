@@ -38,12 +38,10 @@ app.post('/connect', (req, res) => {
   res.json({ message: 'Connection attempt initiated' });
 });
 
-// Function to resolve device and vehicle IDs from serial number
 async function resolveDeviceAndVehicleIds(serialNumber) {
   if (!serialNumber) return { device_id: null, vehicle_id: null };
 
   try {
-    // Get device_id from telematic_devices using serial_number
     const { data: deviceData, error: deviceError } = await supabase
       .from('telematic_devices')
       .select('device_id')
@@ -57,7 +55,6 @@ async function resolveDeviceAndVehicleIds(serialNumber) {
 
     const device_id = deviceData.device_id;
 
-    // Get vehicle_id from vehicle_telematic_assignments
     const { data: assignmentData, error: assignmentError } = await supabase
       .from('vehicle_telematic_assignments')
       .select('vehicle_id')
@@ -79,10 +76,14 @@ async function resolveDeviceAndVehicleIds(serialNumber) {
     return { device_id: null, vehicle_id: null };
   }
 }
+
+function parseMovFleeMessage(payload, telemetry) {
   const result = {
     movflee_device_id: null,
     movflee_vehicle_id: null,
     serial_number: null,
+    device_id: null,
+    vehicle_id: null,
     location_data: null,
     fuel_data: null,
     charge_data: null,
@@ -272,7 +273,6 @@ async function connectToAWS() {
         
         const parsedData = parseMovFleeMessage(payload, telemetry);
         
-        // Resolve device and vehicle IDs from serial number
         const resolvedIds = await resolveDeviceAndVehicleIds(parsedData.serial_number);
         
         const insertData = {
