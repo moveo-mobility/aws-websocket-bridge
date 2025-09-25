@@ -202,9 +202,12 @@ async function createWebSocketSession() {
       .from('telematic_websocket_sessions')
       .insert({
         tenant_id: TENANT_ID,
+        session_name: 'movflee-nodejs-bridge',
+        websocket_url: AWS_WEBSOCKET_URL,
+        connection_status: 'connected',
         connected_at: new Date().toISOString(),
-        status: 'connected',
-        websocket_url: AWS_WEBSOCKET_URL
+        last_connected_at: new Date().toISOString(),
+        created_at: new Date().toISOString()
       })
       .select('id')
       .single();
@@ -223,11 +226,17 @@ async function updateSessionStatus(status, errorMessage) {
 
   try {
     const updateData = {
-      status: status,
-      last_message_at: new Date().toISOString()
+      connection_status: status,
+      updated_at: new Date().toISOString()
     };
 
-    if (errorMessage) updateData.error_message = errorMessage;
+    if (status === 'disconnected') {
+      updateData.last_disconnected_at = new Date().toISOString();
+    }
+
+    if (errorMessage) {
+      updateData.last_error = errorMessage;
+    }
 
     await supabase
       .from('telematic_websocket_sessions')
@@ -300,12 +309,13 @@ async function connectToAWS() {
           console.log('Successfully stored telematic data');
         }
 
+        // Update session with message count
         if (sessionId) {
           await supabase
             .from('telematic_websocket_sessions')
             .update({
-              last_message_at: new Date().toISOString(),
-              message_count: supabase.raw('COALESCE(message_count, 0) + 1')
+              total_messages_received: supabase.raw('COALESCE(total_messages_received, 0) + 1'),
+              updated_at: new Date().toISOString()
             })
             .eq('id', sessionId);
         }
