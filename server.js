@@ -8,7 +8,11 @@ const port = process.env.PORT || 3000;
 const AWS_WEBSOCKET_URL = 'wss://qk3ytibzxc.execute-api.ap-southeast-1.amazonaws.com/production';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const TENANT_ID = process.env.TENANT_ID || 'default';
+const TENANT_ID = process.env.TENANT_ID;
+
+if (!TENANT_ID || !/^[0-9a-f-]{36}$/i.test(TENANT_ID)) {
+  throw new Error('TENANT_ID env var (UUID) fehlt oder ist ungültig');
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false }
@@ -42,34 +46,31 @@ async function resolveDeviceAndVehicleIds(serialNumber) {
   if (!serialNumber) return { device_id: null, vehicle_id: null };
 
   try {
-    const { data: deviceData, error: deviceError } = await supabase
+    const { data: deviceData } = await supabase
       .from('telematic_devices')
       .select('device_id')
       .eq('device_serial', serialNumber)
       .single();
 
-    if (deviceError || !deviceData) {
+    if (!deviceData) {
       console.log('Device not found for serial number:', serialNumber);
       return { device_id: null, vehicle_id: null };
     }
 
     const device_id = deviceData.device_id;
 
-    const { data: assignmentData, error: assignmentError } = await supabase
+    const { data: assignmentData } = await supabase
       .from('vehicle_telematic_assignments')
       .select('vehicle_id')
       .eq('device_id', device_id)
       .single();
 
-    if (assignmentError || !assignmentData) {
+    if (!assignmentData) {
       console.log('Vehicle assignment not found for device_id:', device_id);
       return { device_id, vehicle_id: null };
     }
 
-    return { 
-      device_id: device_id, 
-      vehicle_id: assignmentData.vehicle_id 
-    };
+    return { device_id, vehicle_id: assignmentData.vehicle_id };
 
   } catch (error) {
     console.error('Error resolving device/vehicle IDs:', error);
@@ -111,7 +112,7 @@ function parseMovFleeMessage(payload, telemetry) {
         : telemetry.timestamp
     };
 
-    const rawState = telemetry.raw_data && telemetry.raw_data.state && telemetry.raw_data.state.reported;
+    const rawState = telemetry.raw_data?.state?.reported;
     if (rawState) {
       if (rawState.sp !== undefined) result.location_data.speed = rawState.sp;
       if (rawState.alt !== undefined) result.location_data.altitude = rawState.alt;
@@ -120,7 +121,7 @@ function parseMovFleeMessage(payload, telemetry) {
     }
   }
 
-  const rawState = telemetry.raw_data && telemetry.raw_data.state && telemetry.raw_data.state.reported;
+  const rawState = telemetry.raw_data?.state?.reported;
   if (rawState) {
     const engineData = {};
     const stateData = {};
@@ -309,15 +310,9 @@ async function connectToAWS() {
           console.log('Successfully stored telematic data');
         }
 
-        // Update session with message count
+        // Update session with message count (RPC statt raw)
         if (sessionId) {
-          await supabase
-            .from('telematic_websocket_sessions')
-            .update({
-              total_messages_received: supabase.raw('COALESCE(total_messages_received, 0) + 1'),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', sessionId);
+          await supabase.rpc('increment_telematic_session_msg_count', { p_session_id: sessionId });
         }
 
       } catch (error) {
@@ -332,7 +327,8 @@ async function connectToAWS() {
       await updateSessionStatus('error', error.message);
     });
 
-    awsWebSocket.on('close', async (code, reason) => {
+    awsWebSocket.on('close', async (code, reasonBuf) => {
+      const reason = reasonBuf?.toString?.() || '';
       console.log('WebSocket closed. Code: ' + code + ', Reason: ' + reason);
       isConnecting = false;
       awsWebSocket = null;
