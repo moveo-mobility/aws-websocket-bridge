@@ -8,11 +8,7 @@ const port = process.env.PORT || 3000;
 const AWS_WEBSOCKET_URL = 'wss://qk3ytibzxc.execute-api.ap-southeast-1.amazonaws.com/production';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const TENANT_ID = process.env.TENANT_ID;
-
-if (!TENANT_ID || !/^[0-9a-f-]{36}$/i.test(TENANT_ID)) {
-  throw new Error('TENANT_ID env var (UUID) fehlt oder ist ungültig');
-}
+const TENANT_ID = process.env.TENANT_ID || 'default';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false }
@@ -23,6 +19,7 @@ let sessionId = null;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 10;
 let isConnecting = false;
+let pingInterval = null;
 
 app.use(express.json());
 
@@ -46,31 +43,34 @@ async function resolveDeviceAndVehicleIds(serialNumber) {
   if (!serialNumber) return { device_id: null, vehicle_id: null };
 
   try {
-    const { data: deviceData } = await supabase
+    const { data: deviceData, error: deviceError } = await supabase
       .from('telematic_devices')
       .select('device_id')
       .eq('device_serial', serialNumber)
       .single();
 
-    if (!deviceData) {
+    if (deviceError || !deviceData) {
       console.log('Device not found for serial number:', serialNumber);
       return { device_id: null, vehicle_id: null };
     }
 
     const device_id = deviceData.device_id;
 
-    const { data: assignmentData } = await supabase
+    const { data: assignmentData, error: assignmentError } = await supabase
       .from('vehicle_telematic_assignments')
       .select('vehicle_id')
       .eq('device_id', device_id)
       .single();
 
-    if (!assignmentData) {
+    if (assignmentError || !assignmentData) {
       console.log('Vehicle assignment not found for device_id:', device_id);
       return { device_id, vehicle_id: null };
     }
 
-    return { device_id, vehicle_id: assignmentData.vehicle_id };
+    return { 
+      device_id: device_id, 
+      vehicle_id: assignmentData.vehicle_id 
+    };
 
   } catch (error) {
     console.error('Error resolving device/vehicle IDs:', error);
@@ -112,7 +112,7 @@ function parseMovFleeMessage(payload, telemetry) {
         : telemetry.timestamp
     };
 
-    const rawState = telemetry.raw_data?.state?.reported;
+    const rawState = telemetry.raw_data && telemetry.raw_data.state && telemetry.raw_data.state.reported;
     if (rawState) {
       if (rawState.sp !== undefined) result.location_data.speed = rawState.sp;
       if (rawState.alt !== undefined) result.location_data.altitude = rawState.alt;
@@ -121,7 +121,7 @@ function parseMovFleeMessage(payload, telemetry) {
     }
   }
 
-  const rawState = telemetry.raw_data?.state?.reported;
+  const rawState = telemetry.raw_data && telemetry.raw_data.state && telemetry.raw_data.state.reported;
   if (rawState) {
     const engineData = {};
     const stateData = {};
@@ -248,6 +248,28 @@ async function updateSessionStatus(status, errorMessage) {
   }
 }
 
+function startPingInterval() {
+  // Clear any existing interval
+  if (pingInterval) {
+    clearInterval(pingInterval);
+  }
+  
+  // Send ping every 30 seconds to keep connection alive
+  pingInterval = setInterval(() => {
+    if (awsWebSocket && awsWebSocket.readyState === WebSocket.OPEN) {
+      console.log('Sending ping to keep connection alive');
+      awsWebSocket.ping();
+    }
+  }, 30000);
+}
+
+function stopPingInterval() {
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
+}
+
 async function connectToAWS() {
   if (isConnecting || (awsWebSocket && awsWebSocket.readyState === WebSocket.OPEN)) {
     console.log('Already connecting or connected');
@@ -258,13 +280,28 @@ async function connectToAWS() {
   console.log('Connecting to AWS WebSocket: ' + AWS_WEBSOCKET_URL);
 
   try {
-    awsWebSocket = new WebSocket(AWS_WEBSOCKET_URL);
+    // Create WebSocket with proper headers including keep-alive
+    awsWebSocket = new WebSocket(AWS_WEBSOCKET_URL, {
+      headers: {
+        'Connection': 'keep-alive',
+        'Keep-Alive': 'timeout=60'
+      },
+      handshakeTimeout: 10000,
+      perMessageDeflate: false
+    });
 
     awsWebSocket.on('open', async () => {
       console.log('Connected to AWS API Gateway WebSocket');
       isConnecting = false;
       reconnectAttempts = 0;
       sessionId = await createWebSocketSession();
+      
+      // Start ping interval to keep connection alive
+      startPingInterval();
+    });
+
+    awsWebSocket.on('pong', () => {
+      console.log('Received pong from server');
     });
 
     awsWebSocket.on('message', async (data) => {
@@ -310,9 +347,15 @@ async function connectToAWS() {
           console.log('Successfully stored telematic data');
         }
 
-        // Update session with message count (RPC statt raw)
+        // Update session with message count
         if (sessionId) {
-          await supabase.rpc('increment_telematic_session_msg_count', { p_session_id: sessionId });
+          await supabase
+            .from('telematic_websocket_sessions')
+            .update({
+              total_messages_received: supabase.raw('COALESCE(total_messages_received, 0) + 1'),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', sessionId);
         }
 
       } catch (error) {
@@ -324,14 +367,15 @@ async function connectToAWS() {
     awsWebSocket.on('error', async (error) => {
       console.error('WebSocket error:', error);
       isConnecting = false;
+      stopPingInterval();
       await updateSessionStatus('error', error.message);
     });
 
-    awsWebSocket.on('close', async (code, reasonBuf) => {
-      const reason = reasonBuf?.toString?.() || '';
+    awsWebSocket.on('close', async (code, reason) => {
       console.log('WebSocket closed. Code: ' + code + ', Reason: ' + reason);
       isConnecting = false;
       awsWebSocket = null;
+      stopPingInterval();
       
       await updateSessionStatus('disconnected', 'Connection closed: ' + code + ' - ' + reason);
 
@@ -352,12 +396,15 @@ async function connectToAWS() {
   } catch (error) {
     console.error('Failed to create WebSocket connection:', error);
     isConnecting = false;
+    stopPingInterval();
     await updateSessionStatus('error', error.message);
   }
 }
 
 process.on('SIGINT', async () => {
   console.log('Shutting down gracefully...');
+  
+  stopPingInterval();
   
   if (awsWebSocket) {
     awsWebSocket.close();
@@ -379,9 +426,3 @@ app.listen(port, () => {
     connectToAWS();
   }, 1000);
 });
-
-setInterval(() => {
-  if (awsWebSocket && awsWebSocket.readyState === WebSocket.OPEN) {
-    awsWebSocket.ping();
-  }
-}, 30000);
