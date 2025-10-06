@@ -349,13 +349,9 @@ async function connectToAWS() {
 
         // Update session with message count
         if (sessionId) {
-          await supabase
-            .from('telematic_websocket_sessions')
-            .update({
-              total_messages_received: supabase.raw('COALESCE(total_messages_received, 0) + 1'),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', sessionId);
+          await supabase.rpc('increment_message_count', {
+            session_uuid: sessionId
+          });
         }
 
       } catch (error) {
